@@ -1,0 +1,109 @@
+version: '3'
+networks:
+  main:
+
+services:
+  traefik:
+    image: "traefik:v2.4"
+    container_name: "traefik"
+    command:
+      - "--api.insecure=true"
+      - "--providers.docker=true"
+      - "--entrypoints.http.address=:80"
+      - "--entrypoints.https.address=:443"
+      - "--global.sendAnonymousUsage=false"
+      - "--certificatesresolvers.ssl.acme.httpchallenge=true"
+      - "--certificatesresolvers.ssl.acme.httpchallenge.entrypoint=http"
+      - "--certificatesresolvers.ssl.acme.email=${CERTIFICATE_EMAIL}"
+      - "--certificatesresolvers.ssl.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "443:443"
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - "./letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+  db:
+    container_name: "${DB_HOST}"
+    image: postgres:12.4-alpine
+    volumes:
+      - "./.data:/var/lib/postgresql/data:rw"
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: "${DB_NAME}"
+      POSTGRES_USER: "${DB_USER}"
+      POSTGRES_PASSWORD: "${DB_PASS}"
+    restart: unless-stopped
+    labels:
+      traefik.http.routers.pg-web.rule: Host(`${DB_HOST}`)
+      traefik.http.routers.pg-web.entrypoints: http
+      traefik.http.routers.pg-web.middlewares: redirect
+      traefik.http.middlewares.redirect.redirectscheme.scheme: https
+      traefik.http.routers.pg-web-secure.rule: Host(`${DB_HOST}`)
+      traefik.http.routers.pg-web-secure.entrypoints: https
+      traefik.http.routers.pg-web-secure.tls.certresolver: ssl
+
+  api:
+    container_name: "${API_URL}"
+    build:
+      context: ./backend
+      dockerfile: ./registry/${ENVIRONMENT}/Dockerfile
+    volumes:
+      - "./backend:/opt/app-root/src:rw"
+    ports:
+      - ${CONTAINERS_PORT}
+    environment:
+      PORT: ${CONTAINERS_PORT}
+      APP_ENV: "${ENVIRONMENT}"
+      NODE_ENV: "${ENVIRONMENT}"
+
+      HASH_SECRET: ${HASH_SECRET}
+      JWT_SECRET: ${JWT_SECRET}
+      TOKEN_EXPIRE_IN: ${TOKEN_EXPIRE_IN}
+      REFRESHTOKEN_EXPIRE_IN_DAYS: ${REFRESHTOKEN_EXPIRE_IN_DAYS}
+      SIMPLE_USER: "${SIMPLE_USER}"
+      SYSTEM_USER: "${SYSTEM_USER}"
+      COMPANY_DOMAIN: "thegodstack.com"
+      JWT_AUD: ${JWT_AUD}
+      JWT_ISS: ${JWT_ISS}
+
+      EMAIL_FROM: ${EMAIL_FROM}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY}
+      
+      SPA_URL: ${SPA_URL}
+
+      DB_PORT: "${DB_PORT}"
+      DB_HOST: "${DB_HOST}"
+      DB_USER: "${DB_USER}"
+      DB_PASS: "${DB_PASS}"
+      DB_DATABASE: "${DB_NAME}"
+
+      DEBUG: "true"
+    command: ['./wait-for-it.sh', '-t', '0', '${DB_HOST}:5432', '--', '.s2i/bin/assemble']
+    restart: unless-stopped
+    labels:
+      traefik.http.routers.api-web.rule: Host(`${API_URL}`)
+      traefik.http.routers.api-web.entrypoints: http
+      traefik.http.routers.api-web.middlewares: redirect
+      traefik.http.middlewares.redirect.redirectscheme.scheme: https
+      traefik.http.routers.api-web-secure.rule: Host(`${API_URL}`)
+      traefik.http.routers.api-web-secure.entrypoints: https
+      traefik.http.routers.api-web-secure.tls.certresolver: ssl
+
+  spa:
+    container_name: "${SPA_URL}"
+    image: thegodstack/frontend
+    ports:
+      - ${CONTAINERS_PORT}
+      command: ['./wait-for-it.sh', '-t', '0', '${API_URL}:${CONTAINERS_PORT}', '--', './run']
+    restart: unless-stopped
+    labels:
+      traefik.http.routers.spa-web.rule: Host(`${SPA_URL}`)
+      traefik.http.routers.spa-web.entrypoints: http
+      traefik.http.routers.spa-web.middlewares: redirect
+      traefik.http.middlewares.redirect.redirectscheme.scheme: https
+      traefik.http.routers.spa-web-secure.rule: Host(`${SPA_URL}`)
+      traefik.http.routers.spa-web-secure.entrypoints: https
+      traefik.http.routers.spa-web-secure.tls.certresolver: ssl
